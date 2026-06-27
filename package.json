@@ -1,0 +1,29 @@
+{
+  "name": "tempo-lambda",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc --noEmit",
+    "cdk": "cdk",
+    "deploy": "cdk deploy",
+    "diff": "cdk diff",
+    "import-puzzles": "ts-node --skip-project scripts/import-puzzles.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3",
+    "@aws-sdk/lib-dynamodb": "^3",
+    "aws-cdk-lib": "^2",
+    "chess.js": "^1.0.0",
+    "constructs": "^10",
+    "uuid": "^9"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8",
+    "@types/node": "^20",
+    "@types/uuid": "^9",
+    "aws-cdk": "^2",
+    "csv-parse": "^5",
+    "ts-node": "^10",
+    "typescript": "^5"
+  }
+}
