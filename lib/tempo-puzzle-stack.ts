@@ -62,7 +62,8 @@ export class TempoPuzzleStack extends cdk.Stack {
       bundling: {
         minify: true,
         sourceMap: false,
-        externalModules: [], // bundle everything including aws-sdk v3
+        externalModules: [],
+        forceDockerBundling: false, // use local esbuild, not Docker
       },
     };
 

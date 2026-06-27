@@ -23,6 +23,7 @@
     "@types/uuid": "^9",
     "aws-cdk": "^2",
     "csv-parse": "^5",
+    "esbuild": "^0.21",
     "ts-node": "^10",
     "typescript": "^5"
   }
