@@ -172,6 +172,14 @@ export class TempoPuzzleStack extends cdk.Stack {
       },
     });
 
+    // 50 req/s steady, burst 100 — blocks scrapers/abusers while comfortably
+    // handling normal iOS app traffic (each user makes ~1 call per puzzle solve).
+    const cfnStage = api.defaultStage?.node.defaultChild as apigwv2.CfnStage;
+    cfnStage.defaultRouteSettings = {
+      throttlingRateLimit: 50,
+      throttlingBurstLimit: 100,
+    };
+
     const integrate = (fn: lambda.IFunction) =>
       new integrations.HttpLambdaIntegration(`${fn.node.id}Integration`, fn);
 
