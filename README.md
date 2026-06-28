@@ -1,6 +1,10 @@
+<img src="https://tempo64.com/icon.png" width="80" alt="Tempo64">
+
 # tempo-lambda
 
-AWS CDK backend for Tempo64's puzzle mode. Serves daily puzzles, adaptive next-puzzle selection, Elo-based user stats, and 90-day puzzle history. Four Lambda functions (Node 20, ARM64, esbuild bundled) behind an API Gateway HTTP API v2, backed by four DynamoDB tables.
+AWS CDK backend for [Tempo64](https://tempo64.com) — the chess highlight video creator for iOS. Powers the **puzzle mode**: daily puzzles, adaptive difficulty selection, Elo-based user stats, and 90-day history so users never repeat a puzzle. Video export, board rendering, and audio are fully on-device; this service handles only the puzzle infrastructure.
+
+[App Store](https://apps.apple.com/us/app/tempo64/id6764440731) · [tempo64.com](https://tempo64.com)
 
 ## Architecture
 
