@@ -7,12 +7,14 @@
     "cdk": "cdk",
     "deploy": "cdk deploy",
     "diff": "cdk diff",
-    "import-puzzles": "ts-node --skip-project scripts/import-puzzles.ts"
+    "import-puzzles": "ts-node scripts/import-puzzles.ts"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3",
     "@aws-sdk/lib-dynamodb": "^3",
+    "@peculiar/x509": "^1.9",
     "aws-cdk-lib": "^2",
+    "cbor-x": "^1.5",
     "chess.js": "^1.0.0",
     "constructs": "^10",
     "uuid": "^9"

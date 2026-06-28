@@ -3,6 +3,7 @@ import { DynamoDBDocumentClient, QueryCommand, GetCommand } from '@aws-sdk/lib-d
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { v4 as uuidv4 } from 'uuid';
 import { Puzzle, UserStats, ratingBucket } from '../shared/types';
+import { checkAssertionHeader } from '../shared/appAttest';
 
 const client = new DynamoDBClient({});
 const db = DynamoDBDocumentClient.from(client);
@@ -15,6 +16,17 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const userId = event.queryStringParameters?.userId;
   if (!userId) {
     return { statusCode: 400, body: JSON.stringify({ error: 'userId required' }) };
+  }
+
+  try {
+    await checkAssertionHeader(
+      event.headers?.['x-app-attest-key-id'],
+      event.headers?.['x-app-attest-assertion'],
+      userId,
+      db,
+    );
+  } catch {
+    return { statusCode: 403, body: JSON.stringify({ error: 'Invalid attestation' }) };
   }
 
   // 1. Get user's current rating (default 1500).

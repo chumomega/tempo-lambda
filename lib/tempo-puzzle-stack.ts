@@ -52,6 +52,25 @@ export class TempoPuzzleStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY, // cache, safe to drop
     });
 
+    // Short-lived App Attest challenges. TTL after 5 minutes.
+    // Safe to drop — a lost challenge just means the device retries.
+    const attestChallengesTable = new dynamodb.Table(this, 'AttestChallenges', {
+      tableName: 'tempo-attest-challenges',
+      partitionKey: { name: 'challenge', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: 'ttl',
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // Registered App Attest public keys. One row per device key.
+    // RETAIN so we don't lock out devices on a stack re-deploy.
+    const attestKeysTable = new dynamodb.Table(this, 'AttestKeys', {
+      tableName: 'tempo-attest-keys',
+      partitionKey: { name: 'keyId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
     // ── Shared Lambda config ───────────────────────────────────────────────
 
     const sharedFnProps: Omit<lambdaNode.NodejsFunctionProps, 'entry'> = {
@@ -82,6 +101,7 @@ export class TempoPuzzleStack extends cdk.Stack {
       { POTD_TABLE: potdCacheTable.tableName },
     );
     potdCacheTable.grantReadWriteData(getPuzzleOfDay);
+    // Note: get-puzzle-of-day has no userId so attestation is skipped there.
 
     const getNextPuzzle = fn(this, 'GetNextPuzzle',
       'functions/get-next-puzzle/index.ts',
@@ -89,27 +109,57 @@ export class TempoPuzzleStack extends cdk.Stack {
         PUZZLES_TABLE: puzzlesTable.tableName,
         USER_STATS_TABLE: userStatsTable.tableName,
         USER_HISTORY_TABLE: userHistoryTable.tableName,
+        ATTEST_KEYS_TABLE: attestKeysTable.tableName,
+        APPLE_APP_ID: '9PY7TZK328.com.tempo.apps',
       },
     );
     puzzlesTable.grantReadData(getNextPuzzle);
     userStatsTable.grantReadData(getNextPuzzle);
     userHistoryTable.grantReadData(getNextPuzzle);
+    attestKeysTable.grantReadWriteData(getNextPuzzle);
 
     const recordSolve = fn(this, 'RecordSolve',
       'functions/record-solve/index.ts',
       {
         USER_STATS_TABLE: userStatsTable.tableName,
         USER_HISTORY_TABLE: userHistoryTable.tableName,
+        ATTEST_KEYS_TABLE: attestKeysTable.tableName,
+        APPLE_APP_ID: '9PY7TZK328.com.tempo.apps',
       },
     );
     userStatsTable.grantReadWriteData(recordSolve);
     userHistoryTable.grantReadWriteData(recordSolve);
+    attestKeysTable.grantReadWriteData(recordSolve);
 
     const getUserStats = fn(this, 'GetUserStats',
       'functions/get-user-stats/index.ts',
-      { USER_STATS_TABLE: userStatsTable.tableName },
+      {
+        USER_STATS_TABLE: userStatsTable.tableName,
+        ATTEST_KEYS_TABLE: attestKeysTable.tableName,
+        APPLE_APP_ID: '9PY7TZK328.com.tempo.apps',
+      },
     );
     userStatsTable.grantReadData(getUserStats);
+    attestKeysTable.grantReadWriteData(getUserStats);
+
+    // ── App Attest: challenge + registration ──────────────────────────────
+
+    const attestChallengeFn = fn(this, 'GetAttestChallenge',
+      'functions/attest-challenge/index.ts',
+      { ATTEST_CHALLENGES_TABLE: attestChallengesTable.tableName },
+    );
+    attestChallengesTable.grantReadWriteData(attestChallengeFn);
+
+    const attestRegisterFn = fn(this, 'AttestRegister',
+      'functions/attest-register/index.ts',
+      {
+        ATTEST_CHALLENGES_TABLE: attestChallengesTable.tableName,
+        ATTEST_KEYS_TABLE: attestKeysTable.tableName,
+        APPLE_APP_ID: '9PY7TZK328.com.tempo.apps',
+      },
+    );
+    attestChallengesTable.grantReadWriteData(attestRegisterFn);
+    attestKeysTable.grantReadWriteData(attestRegisterFn);
 
     // ── HTTP API (API Gateway v2) ──────────────────────────────────────────
 
@@ -118,7 +168,7 @@ export class TempoPuzzleStack extends cdk.Stack {
       corsPreflight: {
         allowOrigins: ['*'],
         allowMethods: [apigwv2.CorsHttpMethod.GET, apigwv2.CorsHttpMethod.POST],
-        allowHeaders: ['Content-Type'],
+        allowHeaders: ['Content-Type', 'X-App-Attest-Key-Id', 'X-App-Attest-Assertion'],
       },
     });
 
@@ -129,6 +179,8 @@ export class TempoPuzzleStack extends cdk.Stack {
     api.addRoutes({ path: '/puzzle/next',           methods: [apigwv2.HttpMethod.GET],  integration: integrate(getNextPuzzle) });
     api.addRoutes({ path: '/puzzle/solve',          methods: [apigwv2.HttpMethod.POST], integration: integrate(recordSolve) });
     api.addRoutes({ path: '/user/{userId}/stats',   methods: [apigwv2.HttpMethod.GET],  integration: integrate(getUserStats) });
+    api.addRoutes({ path: '/attest/challenge',      methods: [apigwv2.HttpMethod.GET],  integration: integrate(attestChallengeFn) });
+    api.addRoutes({ path: '/attest/register',       methods: [apigwv2.HttpMethod.POST], integration: integrate(attestRegisterFn) });
 
     // ── Outputs ────────────────────────────────────────────────────────────
 

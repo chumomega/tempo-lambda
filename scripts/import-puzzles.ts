@@ -1,18 +1,17 @@
 /**
  * One-shot script: reads the Lichess puzzle CSV and writes a filtered
- * subset to DynamoDB + a local SQLite for the iOS bundle.
+ * subset to DynamoDB + a local JSON for the iOS bundle.
  *
  * Usage:
  *   npm run import-puzzles -- --input ./lichess_db_puzzle.csv --limit 100000
+ *   npm run import-puzzles -- --input ./lichess_db_puzzle.csv --limit 6000000 --min-popularity 0 --min-plays 0 --skip-json
  *
- * Filters applied (in order):
- *   1. popularity >= 80      — discard low-quality/disliked puzzles
- *   2. nbPlays >= 500        — enough data to trust the rating
- *   3. Proportional sampling per ratingBucket so no tier is over/under-represented
- *
- * Output:
- *   - DynamoDB table tempo-puzzles (all filtered rows)
- *   - ./bundled-puzzles.json  (the same rows, for bundling in the iOS app)
+ * Filters (all configurable via flags):
+ *   --min-popularity  (default 80)
+ *   --min-plays       (default 500)
+ *   --limit           (default 100000)
+ *   --skip-json       skip writing bundled-puzzles.json
+ *   --dry-run         skip all writes
  */
 
 import * as fs from 'fs';
@@ -26,14 +25,18 @@ const client = new DynamoDBClient({ region: process.env.AWS_REGION ?? 'us-east-1
 const db = DynamoDBDocumentClient.from(client);
 
 const PUZZLES_TABLE = 'tempo-puzzles';
-const BATCH_SIZE = 25; // DynamoDB BatchWrite limit
+const BATCH_SIZE = 25;
+const CONCURRENCY = 20; // parallel batch writes
 const DEFAULT_LIMIT = 100_000;
 
-// --- CLI args ---
 const args = process.argv.slice(2);
-const inputFile = args[args.indexOf('--input') + 1] ?? './lichess_db_puzzle.csv';
-const limit = parseInt(args[args.indexOf('--limit') + 1] ?? String(DEFAULT_LIMIT), 10);
-const dryRun = args.includes('--dry-run');
+const arg = (flag: string) => args[args.indexOf(flag) + 1];
+const inputFile    = arg('--input')          ?? './lichess_db_puzzle.csv';
+const limit        = parseInt(arg('--limit') ?? String(DEFAULT_LIMIT), 10);
+const minPop       = parseInt(arg('--min-popularity') ?? '80', 10);
+const minPlays     = parseInt(arg('--min-plays')      ?? '500', 10);
+const dryRun       = args.includes('--dry-run');
+const skipJson     = args.includes('--skip-json');
 
 interface CsvRow {
   PuzzleId: string;
@@ -48,8 +51,30 @@ interface CsvRow {
   OpeningTags: string;
 }
 
+async function writeBatches(items: object[]) {
+  // Fan out CONCURRENCY parallel batch writes
+  const queue = [];
+  for (let i = 0; i < items.length; i += BATCH_SIZE) {
+    queue.push(items.slice(i, i + BATCH_SIZE));
+  }
+  let written = 0;
+  for (let i = 0; i < queue.length; i += CONCURRENCY) {
+    const chunk = queue.slice(i, i + CONCURRENCY);
+    await Promise.all(chunk.map(batch =>
+      db.send(new BatchWriteCommand({
+        RequestItems: {
+          [PUZZLES_TABLE]: batch.map(item => ({ PutRequest: { Item: item } })),
+        },
+      }))
+    ));
+    written += chunk.reduce((s, b) => s + b.length, 0);
+  }
+  return written;
+}
+
 async function main() {
   console.log(`Reading ${inputFile}, target ${limit.toLocaleString()} puzzles…`);
+  console.log(`Filters: min-popularity=${minPop}, min-plays=${minPlays}`);
 
   const rl = readline.createInterface({
     input: fs.createReadStream(inputFile),
@@ -59,10 +84,13 @@ async function main() {
   let headers: string[] = [];
   let accepted: object[] = [];
   let totalRead = 0;
+  let totalWritten = 0;
 
-  // Bucket-level counts so we sample proportionally.
   const bucketCounts: Record<number, number> = {};
-  const MAX_PER_BUCKET = Math.ceil(limit / 30); // ~30 rating buckets in 400–3000
+  const MAX_PER_BUCKET = Math.ceil(limit / 30);
+
+  // Flush buffer once it hits FLUSH_SIZE so we don't hold 6M items in RAM
+  const FLUSH_SIZE = 5000;
 
   for await (const line of rl) {
     if (!headers.length) {
@@ -75,10 +103,10 @@ async function main() {
     const row = Object.fromEntries(headers.map((h, i) => [h, parts[i]])) as unknown as CsvRow;
 
     const popularity = parseInt(row.Popularity, 10);
-    const nbPlays = parseInt(row.NbPlays, 10);
-    const rating = parseInt(row.Rating, 10);
+    const nbPlays    = parseInt(row.NbPlays, 10);
+    const rating     = parseInt(row.Rating, 10);
 
-    if (popularity < 80 || nbPlays < 500 || isNaN(rating)) continue;
+    if (popularity < minPop || nbPlays < minPlays || isNaN(rating)) continue;
 
     const bucket = ratingBucket(rating);
     bucketCounts[bucket] = (bucketCounts[bucket] ?? 0) + 1;
@@ -95,36 +123,38 @@ async function main() {
     });
 
     if (accepted.length >= limit) break;
+
+    // Flush periodically to keep RAM low
+    if (!dryRun && accepted.length >= FLUSH_SIZE) {
+      if (!skipJson) {
+        // JSON only for first flush (bundled set is small)
+      }
+      const w = await writeBatches(accepted);
+      totalWritten += w;
+      console.log(`  ${totalWritten.toLocaleString()} written (read ${totalRead.toLocaleString()} rows)…`);
+      accepted = [];
+    }
   }
 
-  console.log(`Read ${totalRead.toLocaleString()} rows, accepted ${accepted.length.toLocaleString()} puzzles.`);
+  console.log(`Read ${totalRead.toLocaleString()} rows, accepted ${(totalWritten + accepted.length).toLocaleString()} puzzles.`);
 
-  // Write bundled JSON for iOS app.
-  const bundledPath = './bundled-puzzles.json';
-  fs.writeFileSync(bundledPath, JSON.stringify(accepted));
-  console.log(`Wrote ${bundledPath}`);
+  if (!skipJson) {
+    const bundledPath = './bundled-puzzles.json';
+    fs.writeFileSync(bundledPath, JSON.stringify(accepted));
+    console.log(`Wrote ${bundledPath}`);
+  }
 
   if (dryRun) {
     console.log('Dry run — skipping DynamoDB writes.');
     return;
   }
 
-  // Batch-write to DynamoDB.
-  let written = 0;
-  for (let i = 0; i < accepted.length; i += BATCH_SIZE) {
-    const batch = accepted.slice(i, i + BATCH_SIZE);
-    await db.send(new BatchWriteCommand({
-      RequestItems: {
-        [PUZZLES_TABLE]: batch.map(item => ({ PutRequest: { Item: item } })),
-      },
-    }));
-    written += batch.length;
-    if (written % 5000 === 0) {
-      console.log(`  ${written.toLocaleString()} / ${accepted.length.toLocaleString()} written…`);
-    }
+  if (accepted.length > 0) {
+    const w = await writeBatches(accepted);
+    totalWritten += w;
   }
 
-  console.log(`Done. ${written.toLocaleString()} puzzles written to ${PUZZLES_TABLE}.`);
+  console.log(`Done. ${totalWritten.toLocaleString()} puzzles written to ${PUZZLES_TABLE}.`);
 }
 
 main().catch(err => {

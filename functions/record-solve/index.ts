@@ -2,6 +2,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { UserStats, computeNewRating, todayUTC } from '../shared/types';
+import { checkAssertionHeader } from '../shared/appAttest';
 
 const client = new DynamoDBClient({});
 const db = DynamoDBDocumentClient.from(client);
@@ -26,6 +27,17 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
   if (!userId || !puzzleId || puzzleRating == null || solved == null) {
     return { statusCode: 400, body: JSON.stringify({ error: 'missing fields' }) };
+  }
+
+  try {
+    await checkAssertionHeader(
+      event.headers?.['x-app-attest-key-id'],
+      event.headers?.['x-app-attest-assertion'],
+      userId,
+      db,
+    );
+  } catch {
+    return { statusCode: 403, body: JSON.stringify({ error: 'Invalid attestation' }) };
   }
 
   const today = todayUTC();

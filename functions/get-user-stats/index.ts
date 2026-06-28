@@ -2,6 +2,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { UserStats, todayUTC } from '../shared/types';
+import { checkAssertionHeader } from '../shared/appAttest';
 
 const client = new DynamoDBClient({});
 const db = DynamoDBDocumentClient.from(client);
@@ -12,6 +13,17 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const userId = event.pathParameters?.userId;
   if (!userId) {
     return { statusCode: 400, body: JSON.stringify({ error: 'userId required' }) };
+  }
+
+  try {
+    await checkAssertionHeader(
+      event.headers?.['x-app-attest-key-id'],
+      event.headers?.['x-app-attest-assertion'],
+      userId,
+      db,
+    );
+  } catch {
+    return { statusCode: 403, body: JSON.stringify({ error: 'Invalid attestation' }) };
   }
 
   const res = await db.send(new GetCommand({
